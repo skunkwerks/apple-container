@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# rc.d wrapper for the FreeBSD container runtime guest agent (spike, Milestone 2).
+# Install to /usr/local/etc/rc.d/freebsd_agent and enable with:
+#   sysrc freebsd_agent_enable=YES
+#
+# PROVIDE: freebsd_agent
+# REQUIRE: LOGIN
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name="freebsd_agent"
+rcvar="freebsd_agent_enable"
+command="/usr/local/sbin/freebsd-agent.sh"
+pidfile="/var/run/${name}.pid"
+
+# Run the (blocking) agent script under daemon(8) so rc returns and it survives.
+command_interpreter="/bin/sh"
+start_cmd="freebsd_agent_start"
+
+freebsd_agent_start()
+{
+	echo "Starting ${name}."
+	/usr/sbin/daemon -p "${pidfile}" -r "${command}"
+}
+
+load_rc_config "$name"
+: "${freebsd_agent_enable:=NO}"
+run_rc_command "$1"

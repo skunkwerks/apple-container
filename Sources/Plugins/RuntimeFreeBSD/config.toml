@@ -1,0 +1,11 @@
+abstract = "FreeBSD VM runtime plugin (boot-only spike)"
+author = "Apple"
+version = 0.1
+
+[servicesConfig]
+loadAtBoot = false
+runAtLoad = false
+defaultArguments = []
+
+[[servicesConfig.services]]
+type = "runtime"
