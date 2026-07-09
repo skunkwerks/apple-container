@@ -55,6 +55,10 @@ exec 3<>"$DEV" || {
 	exit 1
 }
 
+# Suppress tty echo so the host's own writes aren't reflected back as input
+# (otherwise each request shows up host-side as an unparseable echoed line).
+stty -f "$DEV" -echo 2>/dev/null || true
+
 HOSTNAME=$(hostname)
 RELEASE=$(uname -r)
 printf '{"event":"ready","version":"0.1.0","host":"%s","release":"%s"}\n' \
@@ -71,6 +75,23 @@ while IFS= read -r line <&3; do
 	*'"op":"uname"'*)
 		U=$(uname -a | json_escape)
 		printf '{"event":"uname","data":"%s"}\n' "$U" >&3
+		;;
+	*'"op":"ipaddr"'*)
+		# First non-loopback IPv4 address (empty if networking isn't up).
+		# Note: FreeBSD needs `-a` here; a bare `ifconfig inet` treats "inet" as
+		# an interface name and errors out.
+		IP=$(ifconfig -a inet 2>/dev/null | awk '/[[:space:]]inet /{print $2}' | grep -v '^127\.' | head -1)
+		printf '{"event":"ipaddr","data":"%s"}\n' "$IP" >&3
+		;;
+	*'"op":"exec"'*)
+		# Run an arbitrary command in the guest. The command and its combined
+		# output are base64-framed so newlines/quotes survive the JSONL line.
+		cmd64=$(printf '%s\n' "$line" | sed -n 's|.*"cmd64":"\([A-Za-z0-9+/=]*\)".*|\1|p')
+		cmd=$(printf '%s' "$cmd64" | openssl base64 -d -A 2>/dev/null)
+		out=$(eval "$cmd" 2>&1)
+		code=$?
+		out64=$(printf '%s' "$out" | openssl base64 -A 2>/dev/null)
+		printf '{"event":"exec","code":%d,"out64":"%s"}\n' "$code" "$out64" >&3
 		;;
 	'')
 		: # ignore blank lines

@@ -96,6 +96,26 @@ final class FreeBSDAgentClient: @unchecked Sendable {
         return frame.data ?? ""
     }
 
+    /// Ask the guest for its first non-loopback IPv4 address ("" if none).
+    func ipAddress(timeoutSeconds: Double = 10) async throws -> String {
+        try send(["op": "ipaddr"])
+        let frame = try await expect(timeoutSeconds: timeoutSeconds) { $0.event == "ipaddr" }
+        return frame.data ?? ""
+    }
+
+    /// Poll `ipAddress()` until the guest has a non-loopback IPv4 (DHCP can lag the
+    /// boot handshake) or the deadline passes. Returns "" if no address appears.
+    func waitForIPAddress(timeoutSeconds: Double = 120, pollSeconds: Double = 3) async throws -> String {
+        var elapsed = 0.0
+        while true {
+            let ip = try await ipAddress()
+            if !ip.isEmpty { return ip }
+            if elapsed >= timeoutSeconds { return "" }
+            try await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
+            elapsed += pollSeconds
+        }
+    }
+
     // MARK: - Internals
 
     private func send(_ object: [String: String]) throws {

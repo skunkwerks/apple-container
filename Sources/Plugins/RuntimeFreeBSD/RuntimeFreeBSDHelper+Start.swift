@@ -106,6 +106,8 @@ extension RuntimeFreeBSDHelper {
                         agentLog.info("guest agent ping -> pong OK")
                         let uname = try await client.uname()
                         agentLog.info("guest agent uname", metadata: ["uname": "\(uname)"])
+                        let ip = try await client.waitForIPAddress()
+                        agentLog.info("guest agent ip", metadata: ["ip": "\(ip.isEmpty ? "none (timed out)" : ip)"])
                     } catch {
                         agentLog.error("guest agent handshake failed", metadata: ["error": "\(error)"])
                     }

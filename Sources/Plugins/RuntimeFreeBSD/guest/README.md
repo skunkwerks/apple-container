@@ -5,23 +5,44 @@ baked into the FreeBSD disk image manually (same workflow as the boot-only
 milestone), verified in QEMU first, then exercised by the host helper.
 
 - `freebsd-agent.sh` — the agent: a `/bin/sh` stub that speaks newline-delimited
-  JSON over a virtio-console port (`/dev/ttyV0.1`). Announces `ready`, answers
+  JSON over a virtio-console port. It **auto-detects** the port (the first
+  `/dev/ttyV*` that isn't the boot console `ttyV0.0`). Announces `ready`, answers
   `ping` and `uname`.
 - `freebsd_agent` — an `rc.d` wrapper that launches the agent at boot under
   `daemon(8)`.
 
-The host attaches a **second port on the same** virtio-console device (the first
-port stays the boot log). FreeBSD enumerates it as `/dev/ttyV0.1` (device 0,
-port 1). No guest kernel code is required — `virtio_console(4)` is already in
-`GENERIC`.
+The host attaches a second virtio-console for the agent (the first stays the boot
+log). The device name depends on host topology, which is why the agent auto-detects:
 
-## Prerequisites (already done for boot-only)
+- **Apple VZ** exposes two console *devices* → agent is **`/dev/ttyV1.0`**.
+- A **single multi-port** virtio-serial (e.g. QEMU `-device virtio-serial-pci`
+  with two `virtconsole` ports) → agent is **`/dev/ttyV0.1`**.
+
+No guest kernel code is required — `virtio_console(4)` is already in `GENERIC`.
+
+## Prerequisites
 
 `/boot/loader.conf` must load the virtio console driver:
 
 ```
 virtio_console_load="YES"
 ```
+
+Do **not** add `if_vtnet_load="YES"` — `vtnet` is built into `GENERIC`, and loading
+it as a module triggers `interface vtnet.1 already present in the KLD 'kernel'!`.
+
+For NAT networking under VZ, FreeBSD's `vtnet` needs its feature set relaxed or VZ
+rejects negotiation (`virtio_pci0: desired features were not accepted` →
+`device_attach: vtnet0 attach returned 45`). Add to `/boot/loader.conf`:
+
+```
+hw.vtnet.lro_disable="1"
+hw.vtnet.tso_disable="1"
+hw.vtnet.csum_disable="1"
+hw.vtnet.mq_disable="1"
+```
+
+(Confirmed working on FreeBSD 15.1 under Virtualization.framework.)
 
 ## Bake-in steps (run inside the guest)
 
@@ -38,7 +59,8 @@ sysrc freebsd_agent_enable=YES
 ls -l /dev/ttyV*
 ```
 
-`/dev/ttyV0.0` is the boot-log console; `/dev/ttyV0.1` is the agent channel.
+`/dev/ttyV0.0` is the boot-log console; the agent uses the next port
+(`/dev/ttyV1.0` under VZ, `/dev/ttyV0.1` under single-device QEMU).
 
 ## Verify in QEMU first
 
@@ -84,10 +106,58 @@ guest agent ping -> pong OK
 guest agent uname  uname=FreeBSD freebsd 15.1-RELEASE ...
 ```
 
+## Interactive shell into the guest under VZ (NAT + sshd)
+
+The helper boots headless and VZ has no interactive console, so to get a real shell
+under VZ you enable NAT networking on the host side and `sshd` in the guest.
+
+**Host side** — set NAT in the runtime root's `freebsd-vm.json`:
+
+```json
+{ "...": "...", "network": "nat" }
+```
+
+The helper attaches a `VZNATNetworkDeviceAttachment`; the guest gets an address from
+VZ's built-in DHCP (typically `192.168.64.0/24`, host reachable at `.1`).
+
+**Guest side** — bake into the image (via QEMU, where you have a console):
+
+```sh
+sysrc ifconfig_vtnet0=DHCP      # VZ's virtio-net NIC is vtnet0
+sysrc sshd_enable=YES
+passwd root                     # set a password, or install an authorized_keys
+```
+
+**Discover the guest IP (headless).** Add to `/etc/rc.local` so it prints to the boot
+console (and therefore into `boot.log`):
+
+```sh
+ifconfig vtnet0 inet > /dev/ttyV0.0 2>&1
+```
+
+Then from the host, after a VZ run:
+
+```sh
+grep 'inet ' /tmp/container-freebsd-smoke/boot.log   # find 192.168.64.x
+ssh root@192.168.64.x
+```
+
+(The host can also consult VZ's lease file at `/var/db/dhcpd_leases`.) The agent
+channel and the boot log keep working with NAT enabled — networking is additive.
+
 ## Protocol (spike)
 
-Newline-delimited JSON. Guest → host events: `ready`, `pong`, `uname`, `error`.
-Host → guest requests: `{"op":"ping"}`, `{"op":"uname"}`. This intentionally is
+Newline-delimited JSON. Guest → host events: `ready`, `pong`, `uname`, `ipaddr`,
+`exec`, `error`. Host → guest requests:
+
+- `{"op":"ping"}` → `{"event":"pong"}`
+- `{"op":"uname"}` → `{"event":"uname","data":"<uname -a>"}`
+- `{"op":"ipaddr"}` → `{"event":"ipaddr","data":"<first non-loopback IPv4 or "">"}`
+- `{"op":"exec","cmd64":"<base64 cmd>"}` → `{"event":"exec","code":<int>,"out64":"<base64 combined output>"}`
+
+The exec command and its output are base64-framed (via `openssl base64`) so arbitrary
+commands, quotes, and multi-line output survive the one-line JSONL framing. This
+intentionally is
 *not* gRPC; a raw console stream needs no HTTP/2 framing and JSONL is the smallest
 viable handshake. The production agent can later adopt the `SandboxContext` proto
 framed over the same console, or move to vsock if it lands in base FreeBSD.
