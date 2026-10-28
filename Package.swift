@@ -444,6 +444,15 @@ let package = Package(
             path: "Sources/Plugins/RuntimeLinux",
             exclude: ["config.toml"]
         ),
+        .executableTarget(
+            name: "container-runtime-freebsd",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/Plugins/RuntimeFreeBSD",
+            exclude: ["config.toml", "guest"]
+        ),
         .target(
             name: "ContainerRuntimeLinuxServer",
             dependencies: [
